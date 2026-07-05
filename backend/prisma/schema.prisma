@@ -1,0 +1,417 @@
+// ============================================================================
+// Dorm Management System - Prisma Schema
+// Covers: Auth/Roles, Tenants, Rooms/Beds, Payments, Billing, Maintenance,
+// Announcements, Visitor Logs, Notifications, Reports (derived, no table)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ----------------------------------------------------------------------------
+// ENUMS
+// ----------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  STAFF
+  TENANT
+}
+
+enum RoomType {
+  SINGLE
+  DOUBLE
+  TRIPLE
+  QUADRUPLE
+}
+
+enum RoomStatus {
+  AVAILABLE
+  PARTIAL
+  FULL
+  MAINTENANCE
+}
+
+enum BedStatus {
+  VACANT
+  OCCUPIED
+  RESERVED
+  OUT_OF_SERVICE
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  ENDED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  GCASH
+  BANK_TRANSFER
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIAL
+  OVERDUE
+  REFUNDED
+}
+
+enum BillType {
+  ELECTRICITY
+  WATER
+  INTERNET
+  OTHER
+}
+
+enum BillStatus {
+  UNPAID
+  PAID
+  OVERDUE
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum MaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  CANCELLED
+}
+
+enum NotificationType {
+  ANNOUNCEMENT
+  PAYMENT_DUE
+  MAINTENANCE_UPDATE
+  SYSTEM
+}
+
+enum VisitorStatus {
+  CHECKED_IN
+  CHECKED_OUT
+}
+
+// ----------------------------------------------------------------------------
+// CORE: USERS & AUTH
+// ----------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String
+  firstName     String
+  lastName      String
+  phone         String?
+  role          Role     @default(TENANT)
+  avatarUrl     String?
+  isActive      Boolean  @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  tenantProfile        Tenant?
+  refreshTokens        RefreshToken[]
+  maintenanceRequests  MaintenanceRequest[]  @relation("RequestedBy")
+  assignedMaintenance  MaintenanceRequest[]  @relation("AssignedTo")
+  announcementsCreated Announcement[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revoked   Boolean  @default(false)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ----------------------------------------------------------------------------
+// TENANTS
+// ----------------------------------------------------------------------------
+
+model Tenant {
+  id                  String    @id @default(uuid())
+  userId              String    @unique
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studentId           String?   @unique
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  guardianName        String?
+  guardianPhone        String?
+  moveInDate          DateTime?
+  moveOutDate         DateTime?
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  assignments   BedAssignment[]
+  payments      Payment[]
+  bills         Bill[]
+  visitorLogs   VisitorLog[]
+
+  @@index([studentId])
+  @@map("tenants")
+}
+
+// ----------------------------------------------------------------------------
+// ROOMS & BEDS
+// ----------------------------------------------------------------------------
+
+model Building {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  address   String?
+  createdAt DateTime @default(now())
+
+  rooms Room[]
+
+  @@map("buildings")
+}
+
+model Room {
+  id         String     @id @default(uuid())
+  roomNumber String
+  buildingId String
+  building   Building   @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  type       RoomType
+  capacity   Int
+  monthlyRate Decimal   @db.Decimal(10, 2)
+  status     RoomStatus @default(AVAILABLE)
+  floor      Int?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  beds Bed[]
+  maintenanceRequests MaintenanceRequest[]
+
+  @@unique([buildingId, roomNumber])
+  @@index([status])
+  @@map("rooms")
+}
+
+model Bed {
+  id        String    @id @default(uuid())
+  roomId    String
+  room      Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  bedLabel  String // e.g. "Bed 1", "Bed A"
+  status    BedStatus @default(VACANT)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  assignments BedAssignment[]
+
+  @@unique([roomId, bedLabel])
+  @@index([status])
+  @@map("beds")
+}
+
+// ----------------------------------------------------------------------------
+// BED ASSIGNMENT (tenant <-> bed, with history)
+// ----------------------------------------------------------------------------
+
+model BedAssignment {
+  id                 String           @id @default(uuid())
+  tenantId           String
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bedId              String
+  bed                Bed              @relation(fields: [bedId], references: [id], onDelete: Cascade)
+  moveInDate         DateTime
+  expectedMoveOutDate DateTime?
+  actualMoveOutDate  DateTime?
+  status             AssignmentStatus @default(ACTIVE)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([tenantId])
+  @@index([bedId])
+  @@index([status])
+  @@map("bed_assignments")
+}
+
+// ----------------------------------------------------------------------------
+// PAYMENTS (rent)
+// ----------------------------------------------------------------------------
+
+model Payment {
+  id            String        @id @default(uuid())
+  tenantId      String
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount        Decimal       @db.Decimal(10, 2)
+  method        PaymentMethod
+  status        PaymentStatus @default(PENDING)
+  periodStart   DateTime
+  periodEnd     DateTime
+  paidAt        DateTime?
+  referenceCode String?       @unique
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@map("payments")
+}
+
+// ----------------------------------------------------------------------------
+// UTILITY BILLING
+// ----------------------------------------------------------------------------
+
+model Bill {
+  id        String     @id @default(uuid())
+  tenantId  String
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type      BillType
+  amount    Decimal    @db.Decimal(10, 2)
+  status    BillStatus @default(UNPAID)
+  billingMonth DateTime
+  dueDate   DateTime
+  paidAt    DateTime?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@map("bills")
+}
+
+// ----------------------------------------------------------------------------
+// MAINTENANCE REQUESTS
+// ----------------------------------------------------------------------------
+
+model MaintenanceRequest {
+  id           String              @id @default(uuid())
+  requestedById String
+  requestedBy   User               @relation("RequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  assignedToId String?
+  assignedTo   User?               @relation("AssignedTo", fields: [assignedToId], references: [id])
+  roomId       String?
+  room         Room?               @relation(fields: [roomId], references: [id])
+  title        String
+  description  String
+  priority     MaintenancePriority @default(MEDIUM)
+  status       MaintenanceStatus   @default(OPEN)
+  resolvedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([status])
+  @@index([requestedById])
+  @@map("maintenance_requests")
+}
+
+// ----------------------------------------------------------------------------
+// ANNOUNCEMENTS
+// ----------------------------------------------------------------------------
+
+model Announcement {
+  id          String   @id @default(uuid())
+  title       String
+  content     String
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  isPinned    Boolean  @default(false)
+  publishedAt DateTime @default(now())
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([publishedAt])
+  @@map("announcements")
+}
+
+// ----------------------------------------------------------------------------
+// VISITOR LOGS
+// ----------------------------------------------------------------------------
+
+model VisitorLog {
+  id            String        @id @default(uuid())
+  tenantId      String
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  visitorName   String
+  visitorContact String?
+  purpose       String?
+  checkInTime   DateTime      @default(now())
+  checkOutTime  DateTime?
+  status        VisitorStatus @default(CHECKED_IN)
+  createdAt     DateTime      @default(now())
+
+  @@index([tenantId])
+  @@index([status])
+  @@map("visitor_logs")
+}
+
+// ----------------------------------------------------------------------------
+// NOTIFICATIONS
+// ----------------------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+// ----------------------------------------------------------------------------
+// SETTINGS (key-value system config)
+// ----------------------------------------------------------------------------
+
+model Setting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+
+  @@map("settings")
+}
+
+// ----------------------------------------------------------------------------
+// AUDIT LOG (security / accountability)
+// ----------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([entity])
+  @@map("audit_logs")
+}
