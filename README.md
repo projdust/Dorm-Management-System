@@ -2,7 +2,7 @@
 
 An IM2 group project created by University of San Carlos BSIT Students Using (React + Node/Express + PostgreSQL/Prisma).
 
-## Status: Add already functions working, need automation for payments when a new room + bed is assigned and minor UI/UX improvements needed and then should be good to go.
+## Status: Functions working, need automation for payments when a new room + bed is assigned and minor UI/UX improvements needed and then should be good to go.
 
 **WARNING**
 This is **NOT** a finished product, working foundation with
